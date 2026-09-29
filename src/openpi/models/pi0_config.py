@@ -13,6 +13,7 @@ import openpi.shared.nnx_utils as nnx_utils
 
 if TYPE_CHECKING:
     from openpi.models.pi0 import Pi0
+    from openpi.models.pi05_legato import Pi05Legato
 
 
 @dataclasses.dataclass(frozen=True)
@@ -29,6 +30,11 @@ class Pi0Config(_model.BaseModelConfig):
     # - the state input is part of the discrete language tokens rather than a continuous input that is part of the suffix
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
     pi05: bool = False
+
+    # 新增：默认仍然使用原来的三路相机
+    image_keys: tuple[str, ...] = _model.IMAGE_KEYS
+    # 新增： 启动legato异步
+    legato: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
@@ -56,33 +62,79 @@ class Pi0Config(_model.BaseModelConfig):
 
     @override
     def create(self, rng: at.KeyArrayLike) -> "Pi0":
+        if self.legato:
+            from openpi.models.pi05_legato import Pi05Legato
+            return Pi05Legato(self, rngs=nnx.Rngs(rng))
         from openpi.models.pi0 import Pi0
 
         return Pi0(self, rngs=nnx.Rngs(rng))
 
+    # @override
+    # def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:
+    #     image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
+    #     image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+
+    #     with at.disable_typechecking():
+    #         observation_spec = _model.Observation(
+    #             images={
+    #                 "base_0_rgb": image_spec,
+    #                 "left_wrist_0_rgb": image_spec,
+    #                 "right_wrist_0_rgb": image_spec,
+    #             },
+    #             image_masks={
+    #                 "base_0_rgb": image_mask_spec,
+    #                 "left_wrist_0_rgb": image_mask_spec,
+    #                 "right_wrist_0_rgb": image_mask_spec,
+    #             },
+    #             state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
+    #             tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
+    #             tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+    #         )
+    #     action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
+
+    #     return observation_spec, action_spec
+
     @override
-    def inputs_spec(self, *, batch_size: int = 1) -> tuple[_model.Observation, _model.Actions]:
-        image_spec = jax.ShapeDtypeStruct([batch_size, *_model.IMAGE_RESOLUTION, 3], jnp.float32)
-        image_mask_spec = jax.ShapeDtypeStruct([batch_size], jnp.bool_)
+    def inputs_spec(
+        self, *, batch_size: int = 1
+    ) -> tuple[_model.Observation, _model.Actions]:
+        image_spec = jax.ShapeDtypeStruct(
+            [batch_size, *_model.IMAGE_RESOLUTION, 3],
+            jnp.float32,
+        )
+        image_mask_spec = jax.ShapeDtypeStruct(
+            [batch_size],
+            jnp.bool_,
+        )
 
         with at.disable_typechecking():
             observation_spec = _model.Observation(
                 images={
-                    "base_0_rgb": image_spec,
-                    "left_wrist_0_rgb": image_spec,
-                    "right_wrist_0_rgb": image_spec,
+                    key: image_spec
+                    for key in self.image_keys
                 },
                 image_masks={
-                    "base_0_rgb": image_mask_spec,
-                    "left_wrist_0_rgb": image_mask_spec,
-                    "right_wrist_0_rgb": image_mask_spec,
+                    key: image_mask_spec
+                    for key in self.image_keys
                 },
-                state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
-                tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
-                tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                state=jax.ShapeDtypeStruct(
+                    [batch_size, self.action_dim],
+                    jnp.float32,
+                ),
+                tokenized_prompt=jax.ShapeDtypeStruct(
+                    [batch_size, self.max_token_len],
+                    jnp.int32,
+                ),
+                tokenized_prompt_mask=jax.ShapeDtypeStruct(
+                    [batch_size, self.max_token_len],
+                    bool,
+                ),
             )
-        action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
+        action_spec = jax.ShapeDtypeStruct(
+            [batch_size, self.action_horizon, self.action_dim],
+            jnp.float32,
+        )
         return observation_spec, action_spec
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:

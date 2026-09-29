@@ -17,6 +17,7 @@ import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
+import openpi.policies.EndPose_policy as endpose_policy
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
@@ -33,6 +34,12 @@ ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
 
+DEX_4CAM_IMAGE_KEYS = (
+    "base_0_rgb",
+    "left_wrist_0_rgb",
+    "right_wrist_0_rgb",
+    "goal_0_rgb",
+)
 
 @dataclasses.dataclass(frozen=True)
 class AssetsConfig:
@@ -278,6 +285,175 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
         )
 
 
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotG1DataConfig(DataConfigFactory):
+    # If true, will convert joint dimensions to deltas with respect to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+    # If true, this will convert the joint and gripper values from the standard Aloha space to
+    # the space used by the pi internal runtime which was used to train the base model. People who
+    # use standard Aloha data should set this to true.
+    adapt_to_pi: bool = False
+
+    # Repack transforms.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {"cam_high": "observation.images.top"},
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+    )
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
+            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi, output_action_dim=16)],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(14,-2)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDexDataConfig(DataConfigFactory):
+    # If true, will convert joint dimensions to deltas with respect to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+    # If true, this will convert the joint and gripper values from the standard Aloha space to
+    # the space used by the pi internal runtime which was used to train the base model. People who
+    # use standard Aloha data should set this to true.
+    adapt_to_pi: bool = False
+
+    goal_camera_name: str | None = None
+    # Repack transforms.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {"cam_high": "observation.images.top"},
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+    )
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            # inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)]
+            inputs=[
+                aloha_policy.AlohaInputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    goal_camera_name=self.goal_camera_name,
+                )
+            ],
+            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi, output_action_dim=26)],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(7,7,-6,-6)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotEndPoseDataConfig(DataConfigFactory):
+    # If true, will convert joint dimensions to deltas with respect to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+    # If true, this will convert the joint and gripper values from the standard Aloha space to
+    # the space used by the pi internal runtime which was used to train the base model. People who
+    # use standard Aloha data should set this to true.
+    adapt_to_pi: bool = False
+
+    # Repack transforms.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {"cam_high": "observation.images.top"},
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+    )
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[endpose_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
+            outputs=[endpose_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(3, -7, 3, -7)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoDataConfig(DataConfigFactory):
     """
@@ -513,7 +689,7 @@ class TrainConfig:
     # How often (in steps) to log training metrics.
     log_interval: int = 100
     # How often (in steps) to save checkpoints.
-    save_interval: int = 1000
+    save_interval: int = 5000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
 
@@ -826,6 +1002,1043 @@ _CONFIGS = [
         batch_size=64,
     ),
     #
+    ### personal configs
+    # TrainConfig(
+    #     name="pi05_a3_robot",
+    #     model=pi0_config.Pi0Config(pi05=True),
+    #     data=LeRobotAlohaDataConfig(
+    #         repo_id="test/pick_and_place_origin",
+    #         assets=AssetsConfig(
+    #             assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets",
+    #             asset_id="trossen",
+    #         ),
+    #         default_prompt="Put building blocks into the yellow plate, and the rest into the green plate.",
+    #         repack_transforms=_transforms.Group(
+    #             inputs=[
+    #                 _transforms.RepackTransform(
+    #                     {
+    #                         "images": {
+    #                             "cam_high": "observation.images.front",
+    #                             "cam_left_wrist": "observation.images.left",
+    #                             "cam_right_wrist": "observation.images.right",
+    #                         },
+    #                         "state": "observation.state",
+    #                         "actions": "action",
+    #                     }
+    #                 )
+    #             ]
+    #         ),
+    #         adapt_to_pi=False,
+    #     ),
+    #     weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+    #     num_train_steps=20_000,
+    #     batch_size=6,
+    # ),
+        ### personal configs
+    TrainConfig(
+        name="pi05_full_a3_robot",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            repo_id="test/pick_and_place_origin",
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            default_prompt="Put building blocks into the yellow plate, and the rest into the green plate.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=36,
+    ),
+        ### personal configs
+    TrainConfig(
+        name="pi05_lora_a3_robot",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="EndPose/folding_280_6d",
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            default_prompt="Grasp the towel corner, fling and place it down, flatten the towel thoroughly, fold it neatly and move it to the side",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40000, #20_000,
+        batch_size=40,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+        TrainConfig(
+        name="pi05_lora_200",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="test/folding_200",
+            assets=AssetsConfig(
+                assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_a3_robot",
+                asset_id="test/folding_200",
+            ),
+            default_prompt="fold towels",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40000, #20_000,
+        batch_size=32,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_lora_280",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="test/folding_280",
+            assets=AssetsConfig(
+                assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_a3_robot",
+                asset_id="test/folding_280",
+            ),
+            default_prompt="Grasp the towel corner, fling and place it down, flatten the towel thoroughly, fold it neatly and move it to the side",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40000, #20_000,
+        batch_size=40,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+        TrainConfig(
+        name="pi05_lora_240_legato",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            legato=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/root/data1/qly/huggingface/lerobot/test/towels",      # 训练归一化后数据集位置
+            assets=AssetsConfig(
+                assets_dir="/root/data1/qly/huggingface/lerobot/",
+                asset_id="test/towels",
+            ),      # 指定预计算的统计信息，即归一化计算结果的存放位置
+            default_prompt="fold towels",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40000, #20_000,
+        batch_size=32,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_lora_240_endpose",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotEndPoseDataConfig(
+            repo_id="EndPose/folding_280_6d",
+            assets=AssetsConfig(
+                assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_240_endpose",
+                asset_id="EndPose/folding_280_6d",
+            ),
+            default_prompt="Grasp the towel corner, fling and place it down, flatten the towel thoroughly, fold it neatly and move it to the side",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40000, #20_000,
+        batch_size=40,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+        TrainConfig(
+        name="pi05_lora_g1_50_v1",
+        keep_period = 1000,
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotG1DataConfig(
+            repo_id="g1/place_object_v1",
+            assets=AssetsConfig(
+                assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_g1_50_v1",
+                asset_id="g1/place_object_v1",
+            ),
+            default_prompt="Grasp the object on the tabletop and place it into the plate.",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_left_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20000, #20_000,
+        batch_size=32,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+            name="pi05_lora_g1_80_new",
+            keep_period = 1000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # 启用 LoRA 的关键！
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora"),
+            data=LeRobotG1DataConfig(
+                repo_id="g1/place_80_new",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_g1_80_new",
+                    asset_id="g1/place_80_new",
+                ),
+                default_prompt="Grasp the object on the tabletop and place it into the plate.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_left_high",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=20000, #20_000,
+            batch_size=32,
+            #LoRA finetuning configs
+            ### personal configs
+            freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="first_task",
+            keep_period = 5000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # 启用 LoRA 的关键！
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora"),
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_lerobot_v3",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/first_task",
+                    asset_id="competition/cup_lerobot_v3",
+                ),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=50_000, #20_000,
+            batch_size=32,
+            #LoRA finetuning configs
+            ### personal configs
+            freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        
+        TrainConfig(
+            name="first_task_4cam",
+            keep_period=5000,
+
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+                ),
+            data=LeRobotDexDataConfig(
+                # 必须与新数据集实际使用的 repo_id 一致
+                repo_id="competition/cup_four_cameras",
+
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/first_task_4cam",
+                    asset_id="competition/cup_four_cameras",
+                ),
+
+                default_prompt=(
+                    "Pick up the cup and place it "
+                    "at the designated location."
+                ),
+
+                goal_camera_name="cam_goal",
+
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high":
+                                        "observation.images.cam_top",
+                                    "cam_left_wrist":
+                                        "observation.images.cam_left_wrist",
+                                    "cam_right_wrist":
+                                        "observation.images.cam_right_wrist",
+                                    "cam_goal":
+                                        "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+
+                adapt_to_pi=False,
+            ),
+
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            # 第四路会明显增加显存，建议先从 16 开始
+            batch_size=32,
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="second_task",
+            keep_period = 5000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # 启用 LoRA 的关键！
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora"),
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_lerobot_step02",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/second_task",
+                    asset_id="competition/cup_lerobot_step02",
+                ),
+                default_prompt="Place the cup at the sealing station, wait for sealing to finish, then return the sealed cup to the output area.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=50_000, #20_000,
+            batch_size=32,
+            #LoRA finetuning configs
+            ### personal configs
+            freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        
+        TrainConfig(
+            name="second_task_4cam",
+            keep_period=5000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+                ),
+            data=LeRobotDexDataConfig(
+                # 必须与新数据集实际使用的 repo_id 一致
+                repo_id="competition/cup_step02_lerobot_v3_4cam",
+
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/second_task_4cam",
+                    asset_id="competition/cup_step02_lerobot_v3_4cam",
+                ),
+
+                default_prompt=(
+                    "Place the cup at the sealing station, wait for sealing to finish, then return the sealed cup to the output area."
+                ),
+                goal_camera_name="cam_goal",
+
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high":
+                                        "observation.images.cam_top",
+                                    "cam_left_wrist":
+                                        "observation.images.cam_left_wrist",
+                                    "cam_right_wrist":
+                                        "observation.images.cam_right_wrist",
+                                    "cam_goal":
+                                        "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+
+                adapt_to_pi=False,
+            ),
+
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            # 第四路会明显增加显存，建议先从 16 开始
+            batch_size=32,
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+                    name="third_task",
+                    keep_period = 5000,
+                    model=pi0_config.Pi0Config(
+                        pi05=True,
+                        # 启用 LoRA 的关键！
+                        paligemma_variant="gemma_2b_lora",
+                        action_expert_variant="gemma_300m_lora"),
+                    data=LeRobotDexDataConfig(
+                        repo_id="competition/cup_lerobot_step03",
+                        assets=AssetsConfig(
+                            assets_dir="/root/data1/xxy/openpi/assets/third_task",
+                            asset_id="competition/cup_lerobot_step03",
+                        ),
+                        default_prompt="Pick up the barcode label and stick it onto the cup.",
+                        repack_transforms=_transforms.Group(
+                            inputs=[
+                                _transforms.RepackTransform(
+                                    {
+                                        "images": {
+                                            "cam_high": "observation.images.cam_top",
+                                            "cam_left_wrist": "observation.images.cam_left_wrist",
+                                            "cam_right_wrist": "observation.images.cam_right_wrist",
+                                        },
+                                        "state": "observation.state",
+                                        "actions": "action",
+                                    }
+                                )
+                            ]
+                        ),
+                        adapt_to_pi=False,
+                    ),
+                    weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+                    num_train_steps=40_000, #20_000,
+                    batch_size=32,
+                    #LoRA finetuning configs
+                    ### personal configs
+                    freeze_filter=pi0_config.Pi0Config(
+                    pi05=True,
+                    paligemma_variant="gemma_2b_lora",
+                    action_expert_variant="gemma_300m_lora",
+                    ).get_freeze_filter(),
+                    ema_decay=None,
+                ),
+                
+                TrainConfig(
+                    name="third_task_4cam",
+                    keep_period=5000,
+                    model=pi0_config.Pi0Config(
+                        pi05=True,
+                        paligemma_variant="gemma_2b_lora",
+                        action_expert_variant="gemma_300m_lora",
+                        image_keys=DEX_4CAM_IMAGE_KEYS,
+                        ),
+                    data=LeRobotDexDataConfig(
+                        # 必须与新数据集实际使用的 repo_id 一致
+                        repo_id="competition/cup_step03_lerobot_v3_4cam",
+        
+                        assets=AssetsConfig(
+                            assets_dir="/root/data1/xxy/openpi/assets/third_task_4cam",
+                            asset_id="competition/cup_step03_lerobot_v3_4cam",
+                        ),
+        
+                        default_prompt=(
+                            "Pick up the barcode label and stick it onto the cup."
+                        ),
+                        goal_camera_name="cam_goal",
+        
+                        repack_transforms=_transforms.Group(
+                            inputs=[
+                                _transforms.RepackTransform(
+                                    {
+                                        "images": {
+                                            "cam_high":
+                                                "observation.images.cam_top",
+                                            "cam_left_wrist":
+                                                "observation.images.cam_left_wrist",
+                                            "cam_right_wrist":
+                                                "observation.images.cam_right_wrist",
+                                            "cam_goal":
+                                                "observation.images.goal",
+                                        },
+                                        "state": "observation.state",
+                                        "actions": "action",
+                                    }
+                                )
+                            ]
+                        ),
+        
+                        adapt_to_pi=False,
+                    ),
+        
+                    weight_loader=weight_loaders.CheckpointWeightLoader(
+                        "gs://openpi-assets/checkpoints/pi05_base/params"
+                    ),
+                    num_train_steps=40_000,
+                    # 第四路会明显增加显存，建议先从 16 开始
+                    batch_size=32,
+                    freeze_filter=pi0_config.Pi0Config(
+                        pi05=True,
+                        paligemma_variant="gemma_2b_lora",
+                        action_expert_variant="gemma_300m_lora",
+                        image_keys=DEX_4CAM_IMAGE_KEYS,
+                    ).get_freeze_filter(),
+                    ema_decay=None,
+                ),
+        TrainConfig(
+                name="pi05_lora_g1_130_old",
+                keep_period = 1000,
+                model=pi0_config.Pi0Config(
+                    pi05=True,
+                    # 启用 LoRA 的关键！
+                    paligemma_variant="gemma_2b_lora",
+                    action_expert_variant="gemma_300m_lora"),
+                data=LeRobotG1DataConfig(
+                    repo_id="g1/place_130_old",
+                    assets=AssetsConfig(
+                        assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_g1_130_old",
+                        asset_id="g1/place_130_old",
+                    ),
+                    default_prompt="Grasp the object on the tabletop and place it into the plate.",
+                    repack_transforms=_transforms.Group(
+                        inputs=[
+                            _transforms.RepackTransform(
+                                {
+                                    "images": {
+                                        "cam_high": "observation.images.cam_left_high",
+                                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    },
+                                    "state": "observation.state",
+                                    "actions": "action",
+                                }
+                            )
+                        ]
+                    ),
+                    adapt_to_pi=False,
+                ),
+                weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+                num_train_steps=20000, #20_000,
+                batch_size=32,
+                #LoRA finetuning configs
+                ### personal configs
+                freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora",
+                ).get_freeze_filter(),
+                ema_decay=None,
+            ),
+        TrainConfig(
+            name="g1_rubbish_70",
+            keep_period = 1000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # 启用 LoRA 的关键！
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora"),
+            data=LeRobotG1DataConfig(
+                repo_id="g1/rubbish_70",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/g1_rubbish_70",
+                    asset_id="g1/rubbish_70",
+                ),
+                default_prompt="Pick up the object from the table and put it into the trash bin.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_left_high",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+                use_delta_joint_actions=False
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=20000, #20_000,
+            batch_size=32,
+            #LoRA finetuning configs
+            ### personal configs
+            freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="g1_bottle_100",
+            keep_period = 1000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # 启用 LoRA 的关键！
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora"),
+            data=LeRobotG1DataConfig(
+                repo_id="g1/bottle",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/g1_bottle_100",
+                    asset_id="g1/bottle",
+                ),
+                default_prompt="Pick up the bottle and place it into the box.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_left_high",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+                use_delta_joint_actions=False
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=20000, #20_000,
+            batch_size=24, #32,
+            #LoRA finetuning configs
+            ### personal configs
+            freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        # TrainConfig(
+        #     name="g1_pen_100_left",
+        #     keep_period = 1000,
+        #     model=pi0_config.Pi0Config(
+        #         pi05=True,
+        #         # 启用 LoRA 的关键！
+        #         paligemma_variant="gemma_2b_lora",
+        #         action_expert_variant="gemma_300m_lora"),
+        #     data=LeRobotG1LeftDataConfig(
+        #         repo_id="g1/pen_100",
+        #         assets=AssetsConfig(
+        #             assets_dir="/root/data1/xxy/openpi/assets/g1_pen_100_left",
+        #             asset_id="g1/pen_100",
+        #         ),
+        #         default_prompt="Pick up the glue stick and place it into the black container.",
+        #         repack_transforms=_transforms.Group(
+        #             inputs=[
+        #                 _transforms.RepackTransform(
+        #                     {
+        #                         "images": {
+        #                             "cam_high": "observation.images.cam_left_high",
+        #                             "cam_left_wrist": "observation.images.cam_left_wrist",
+        #                             "cam_right_wrist": "observation.images.cam_right_wrist",
+        #                         },
+        #                         "state": "observation.state",
+        #                         "actions": "action",
+        #                     }
+        #                 )
+        #             ]
+        #         ),
+        #         adapt_to_pi=False,
+        #     ),
+        #     weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        #     num_train_steps=20000, #20_000,
+        #     batch_size=32,
+        #     #LoRA finetuning configs
+        #     ### personal configs
+        #     freeze_filter=pi0_config.Pi0Config(
+        #     pi05=True,
+        #     paligemma_variant="gemma_2b_lora",
+        #     action_expert_variant="gemma_300m_lora",
+        #     ).get_freeze_filter(),
+        #     ema_decay=None,
+        # ),
+        TrainConfig(
+            name="g1_pen_100_fixed",
+            keep_period = 1000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # 启用 LoRA 的关键！
+                paligemma_variant="gemma_2b_lora",
+                action_expert_variant="gemma_300m_lora"),
+            data=LeRobotG1DataConfig(
+                repo_id="g1/pen_100_fixed",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/g1_pen_100_fixed",
+                    asset_id="g1/pen_100_fixed",
+                ),
+                default_prompt="Pick up the glue stick and place it into the black container.",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_left_high",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+            num_train_steps=20000, #20_000,
+            batch_size=32,
+            #LoRA finetuning configs
+            ### personal configs
+            freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+    TrainConfig(
+        name="pi05_lora_200_improve_20",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="test/folding_200_improve_20",
+            assets=AssetsConfig(
+                assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_a3_robot",
+                asset_id="test/folding_200_improve_20",
+            ),
+            default_prompt="Grasp the towel corner, fling and place it down, flatten the towel thoroughly, fold it neatly and move it to the side",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=40000, #20_000,
+        batch_size=32,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+      TrainConfig(
+        name="pi05_lora_80",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # 启用 LoRA 的关键！
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m"),
+        data=LeRobotAlohaDataConfig(
+            repo_id="test/folding_80",
+            assets=AssetsConfig(
+                assets_dir="/root/data1/xxy/openpi/assets/pi05_lora_a3_robot",
+                asset_id="test/folding_80",
+            ),
+            default_prompt="fold towels",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.front",
+                                "cam_left_wrist": "observation.images.left",
+                                "cam_right_wrist": "observation.images.right",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+            adapt_to_pi=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=80_000, #20_000,
+        batch_size=36,
+        #LoRA finetuning configs
+        ### personal configs
+        freeze_filter=pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+
+    TrainConfig(
+    name="pi0_towel_lora", 
+    model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+    data=LeRobotAlohaDataConfig(
+        repo_id="test/pick_and_place2",
+        assets=AssetsConfig(
+            assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
+            asset_id="trossen",
+        ),
+        default_prompt="fold towels",
+        repack_transforms=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "cam_high": "observation.images.front",
+                            "cam_left_wrist": "observation.images.left",
+                            "cam_right_wrist": "observation.images.right",
+                        },
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        ),
+        adapt_to_pi=False,
+        use_delta_joint_actions=True,
+    ),
+    weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_aloha_towel/params"),
+    num_train_steps=20000,  
+    freeze_filter=pi0_config.Pi0Config(
+        paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+    ).get_freeze_filter(),
+    ema_decay=None,
+    batch_size=36,
+),
     # Fine-tuning DROID configs.
     #
     TrainConfig(

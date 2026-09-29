@@ -236,7 +236,18 @@ class BaseModelConfig(abc.ABC):
         graphdef, state = nnx.split(model)
         if remove_extra_params:
             params = ocp.transform_utils.intersect_trees(state.to_pure_dict(), params)
-        at.check_pytree_equality(expected=state.to_pure_dict(), got=params, check_shapes=True, check_dtypes=False)
+        # === BEGIN: Legato fix - restore None-valued leaves dropped by intersect_trees ===
+        # intersect_trees drops None-valued leaves (e.g. bias from nnx.Linear(use_bias=False)).
+        # Restore them so the structure matches the expected state.
+        expected = state.to_pure_dict()
+        flat_expected = traverse_util.flatten_dict(expected)
+        flat_params = traverse_util.flatten_dict(params)
+        for k, v in flat_expected.items():
+            if v is None and k not in flat_params:
+                flat_params[k] = None
+        params = traverse_util.unflatten_dict(flat_params)
+        # === END: Legato fix ===
+        at.check_pytree_equality(expected=expected, got=params, check_shapes=True, check_dtypes=False)
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 

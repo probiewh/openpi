@@ -69,6 +69,50 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
     if log_code:
         wandb.run.log_code(epath.Path(__file__).parent.parent)
 
+#################################legato############################
+# def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
+#     """Loads and validates the weights. Returns a loaded subset of the weights."""
+#     loaded_params = loader.load(params_shape)
+
+#     # Remove jax.ShapeDtypeStruct from the loaded params. This makes sure that only the loaded params are returned.
+#     # 修改权重加载部分以适配最新的legato模型，确保legato_weight_proj参数在加载时被正确处理。
+#     if "legato_weight_proj" not in loaded_params:
+#         if "legato_weight_proj" not in params_shape:
+#             raise ValueError(
+#                 "The current model does not contain "
+#                 "'legato_weight_proj', so checkpoint compatibility "
+#                 "handling cannot be applied."
+#             )
+
+#         loaded_params["legato_weight_proj"] = (
+#             params_shape["legato_weight_proj"]
+#         )
+#         logging.info(
+#             "Checkpoint does not contain legato_weight_proj; "
+#             "keeping the model's zero-initialized "
+#             "legato_weight_proj parameters."
+#         )
+    
+#     at.check_pytree_equality(
+#         expected=params_shape,
+#         got=loaded_params,
+#         check_shapes=True,
+#         check_dtypes=True,
+#     )
+#     return traverse_util.unflatten_dict(
+#         {
+#             key: value
+#             for key, value in traverse_util.flatten_dict(
+#                 loaded_params
+#             ).items()
+#             if not isinstance(
+#                 value,
+#                 jax.ShapeDtypeStruct,
+#             )
+#         }
+#     )
+
+
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
     """Loads and validates the weights. Returns a loaded subset of the weights."""
@@ -79,6 +123,7 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     return traverse_util.unflatten_dict(
         {k: v for k, v in traverse_util.flatten_dict(loaded_params).items() if not isinstance(v, jax.ShapeDtypeStruct)}
     )
+
 
 
 @at.typecheck
@@ -164,7 +209,6 @@ def train_step(
     # Update the model in place and return the new full state.
     nnx.update(model, new_params)
     new_params = nnx.state(model)
-
     new_state = dataclasses.replace(state, step=state.step + 1, params=new_params, opt_state=new_opt_state)
     if state.ema_decay is not None:
         new_state = dataclasses.replace(
@@ -188,6 +232,19 @@ def train_step(
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
     }
+    # ── LEGATO DEBUG BEGIN ──
+    if config.model.legato:
+        legato_grad_norm = optax.global_norm(grads["legato_weight_proj"])
+        legato_update_norm = optax.global_norm(updates["legato_weight_proj"])
+        legato_param_norm = optax.global_norm(new_params["legato_weight_proj"])
+        info = {
+            **info,
+            "legato/grad_norm": legato_grad_norm,
+            "legato/update_norm": legato_update_norm,
+            "legato/param_norm": legato_param_norm,
+        }
+    # ── LEGATO DEBUG END ──
+
     return new_state, info
 
 
@@ -234,6 +291,31 @@ def main(config: _config.TrainConfig):
     wandb.log({"camera_views": images_to_log}, step=0)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
+    # ── LEGATO DEBUG BEGIN ──
+    if config.model.legato:
+        flat_params = traverse_util.flatten_dict(train_state.params.to_pure_dict())
+        legato_keys = [k for k in flat_params if "legato_weight_proj" in str(k)]
+        logging.info(f"[Legato Init] legato_weight_proj keys: {legato_keys}")
+        trainable_params = train_state.params.filter(config.trainable_filter)
+        flat_trainable = traverse_util.flatten_dict(trainable_params.to_pure_dict())
+        legato_trainable_keys = [k for k in flat_trainable if "legato_weight_proj" in str(k)]
+        is_trainable = len(legato_trainable_keys) > 0
+        logging.info(f"[Legato Init] legato_weight_proj trainable: {is_trainable}")
+        for k in legato_keys:
+            v = flat_params[k]
+            if v is None:
+                logging.info(f"[Legato Init] {k}: None (no bias)")
+                continue
+            logging.info(
+                f"[Legato Init] {k}: shape={v.shape}, "
+                f"min={float(v.min()):.6f}, max={float(v.max()):.6f}, mean={float(v.mean()):.6f}"
+            )
+        if not is_trainable:
+            raise RuntimeError(
+                "legato_weight_proj is NOT in trainable_filter! Training will have no effect on this layer."
+            )
+    # ── LEGATO DEBUG END ──
+
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
 
