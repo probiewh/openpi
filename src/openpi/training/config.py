@@ -14,11 +14,16 @@ from typing_extensions import override
 import tyro
 
 import openpi.models.model as _model
+import openpi.models.pi0_armonly_config as pi0_armonly_config
 import openpi.models.pi0_config as pi0_config
+import openpi.models.pi0_history_config as pi0_history_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.EndPose_policy as endpose_policy
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.arm_only_policy as arm_only_policy
+import openpi.policies.dex_history_policy as dex_history_policy
+import openpi.policies.dqhand_policy as dqhand_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -27,6 +32,7 @@ import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
+import openpi.training.competition_weight_loaders as competition_weight_loaders
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
@@ -94,6 +100,10 @@ class DataConfig:
     # LeRobot dataset is using different keys to represent the action.
     action_sequence_keys: Sequence[str] = ("actions",)
 
+    # Optional extra temporal samples, expressed in dataset frames. This is empty
+    # for every existing config and is used only by history-aware variants.
+    extra_delta_steps: dict[str, Sequence[int]] = dataclasses.field(default_factory=dict)
+
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
@@ -131,7 +141,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI05:
-                assert isinstance(model_config, pi0_config.Pi0Config)
+                assert hasattr(model_config, "discrete_state_input")
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -392,6 +402,137 @@ class LeRobotDexDataConfig(DataConfigFactory):
 
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDexArmOnlyDataConfig(DataConfigFactory):
+    """Four-camera dexterous data with loss applied only to the 14 arm joints."""
+
+    default_prompt: str | None = None
+    adapt_to_pi: bool = False
+    goal_camera_name: str = "cam_goal"
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default_factory=_transforms.Group
+    )
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                arm_only_policy.ArmOnlyInputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    goal_camera_name=self.goal_camera_name,
+                )
+            ],
+            outputs=[arm_only_policy.ArmOnlyOutputs(adapt_to_pi=self.adapt_to_pi)],
+        )
+        arm_delta_mask = _transforms.make_bool_mask(14)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(arm_delta_mask)],
+            outputs=[_transforms.AbsoluteActions(arm_delta_mask)],
+        )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDexHistoryDataConfig(DataConfigFactory):
+    """Four-camera cup data with one previous decision-point observation."""
+
+    default_prompt: str | None = None
+    adapt_to_pi: bool = False
+    goal_camera_name: str = "cam_goal"
+    history_offset_steps: int = 20
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default_factory=_transforms.Group
+    )
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                dex_history_policy.DexHistoryInputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    goal_camera_name=self.goal_camera_name,
+                )
+            ],
+            outputs=[
+                dex_history_policy.DexHistoryOutputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    output_action_dim=26,
+                )
+            ],
+        )
+        delta_action_mask = _transforms.make_bool_mask(7, 7, -6, -6)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            extra_delta_steps={
+                "observation.images.cam_top": (-self.history_offset_steps, 0),
+                "observation.images.cam_left_wrist": (-self.history_offset_steps, 0),
+            },
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDexDQHandDataConfig(DataConfigFactory):
+    """Dexterous data transformed to 14 arm dimensions plus two hand codes."""
+
+    tokenizer_path: str = tyro.MISSING
+    default_prompt: str | None = None
+    adapt_to_pi: bool = False
+    goal_camera_name: str = "cam_goal"
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default_factory=_transforms.Group
+    )
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                dqhand_policy.DQHandInputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    goal_camera_name=self.goal_camera_name,
+                    tokenizer_path=self.tokenizer_path,
+                )
+            ],
+            outputs=[
+                dqhand_policy.DQHandOutputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    tokenizer_path=self.tokenizer_path,
+                )
+            ],
+        )
+        compact_delta_mask = _transforms.make_bool_mask(14, -2)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(compact_delta_mask)],
+            outputs=[_transforms.AbsoluteActions(compact_delta_mask)],
+        )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=self.repack_transforms,
@@ -1479,6 +1620,240 @@ _CONFIGS = [
                 image_keys=DEX_4CAM_IMAGE_KEYS,
             ).get_freeze_filter(),
 
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="first_task_4cam_lora32",
+            keep_period=5000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_four_cameras",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/first_task_4cam",
+                    asset_id="competition/cup_four_cameras",
+                ),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                goal_camera_name="cam_goal",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=32,
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="first_task_4cam_lora64",
+            keep_period=5000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora64",
+                action_expert_variant="gemma_300m_lora64",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_four_cameras",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/first_task_4cam",
+                    asset_id="competition/cup_four_cameras",
+                ),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                goal_camera_name="cam_goal",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=32,
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora64",
+                action_expert_variant="gemma_300m_lora64",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="first_task_4cam_armonly",
+            keep_period=5000,
+            model=pi0_armonly_config.Pi0ArmOnlyConfig(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+            data=LeRobotDexArmOnlyDataConfig(
+                repo_id="competition/cup_four_cameras",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/first_task_4cam",
+                    asset_id="competition/cup_four_cameras",
+                ),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                goal_camera_name="cam_goal",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=32,
+            freeze_filter=pi0_armonly_config.Pi0ArmOnlyConfig(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="first_task_4cam_history2",
+            keep_period=5000,
+            model=pi0_history_config.Pi0HistoryConfig(),
+            data=LeRobotDexHistoryDataConfig(
+                repo_id="competition/cup_four_cameras",
+                assets=AssetsConfig(
+                    assets_dir="/root/data1/xxy/openpi/assets/first_task_4cam",
+                    asset_id="competition/cup_four_cameras",
+                ),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                goal_camera_name="cam_goal",
+                history_offset_steps=20,
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        dex_history_policy.ExtractHistoryFrames(),
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                    "previous_cam_high": "observation.images.previous_cam_top",
+                                    "previous_cam_left_wrist": (
+                                        "observation.images.previous_cam_left_wrist"
+                                    ),
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        ),
+                    ]
+                ),
+            ),
+            weight_loader=competition_weight_loaders.HistoryCheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=16,
+            freeze_filter=pi0_history_config.Pi0HistoryConfig().get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="first_task_4cam_dqhand",
+            keep_period=5000,
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+            data=LeRobotDexDQHandDataConfig(
+                repo_id="competition/cup_four_cameras",
+                tokenizer_path=(
+                    "/root/data1/xxy/openpi/assets/first_task_4cam_dqhand/"
+                    "competition/cup_four_cameras/dqhand_tokenizer.npz"
+                ),
+                assets=AssetsConfig(asset_id="competition/cup_four_cameras"),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                goal_camera_name="cam_goal",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+            ),
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=32,
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
             ema_decay=None,
         ),
         TrainConfig(

@@ -6,6 +6,8 @@ from typing import Any
 import jax.numpy as jnp
 
 import openpi.models.model as _model
+import openpi.models.pi0_history_config as _pi0_history_config
+import openpi.policies.history_policy as _history_policy
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
@@ -72,7 +74,12 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
-    return _policy.Policy(
+    policy_cls = (
+        _history_policy.HistoryPolicy
+        if isinstance(train_config.model, _pi0_history_config.Pi0HistoryConfig)
+        else _policy.Policy
+    )
+    return policy_cls(
         model,
         transforms=[
             *repack_transforms.inputs,

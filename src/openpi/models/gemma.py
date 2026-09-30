@@ -52,7 +52,16 @@ class Config:
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
 
 
-Variant = Literal["dummy", "gemma_300m", "gemma_300m_lora", "gemma_2b", "gemma_2b_lora"]
+Variant = Literal[
+    "dummy",
+    "gemma_300m",
+    "gemma_300m_lora",
+    "gemma_300m_lora64",
+    "gemma_2b",
+    "gemma_2b_lora",
+    "gemma_2b_lora32",
+    "gemma_2b_lora64",
+]
 
 
 def get_config(variant: Variant) -> Config:
@@ -95,6 +104,20 @@ def get_config(variant: Variant) -> Config:
             head_dim=256,
             lora_configs={"attn": lora.LoRAConfig(rank=16, alpha=16.0), "ffn": lora.LoRAConfig(rank=16, alpha=16.0)},
         )
+    if variant in ("gemma_2b_lora32", "gemma_2b_lora64"):
+        rank = 32 if variant == "gemma_2b_lora32" else 64
+        return Config(
+            width=2048,
+            depth=18,
+            mlp_dim=16_384,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            lora_configs={
+                "attn": lora.LoRAConfig(rank=rank, alpha=float(rank)),
+                "ffn": lora.LoRAConfig(rank=rank, alpha=float(rank)),
+            },
+        )
     if variant == "gemma_300m_lora":
         # 311M params
         return Config(
@@ -105,6 +128,19 @@ def get_config(variant: Variant) -> Config:
             num_kv_heads=1,
             head_dim=256,
             lora_configs={"attn": lora.LoRAConfig(rank=32, alpha=32.0), "ffn": lora.LoRAConfig(rank=32, alpha=32.0)},
+        )
+    if variant == "gemma_300m_lora64":
+        return Config(
+            width=1024,
+            depth=18,
+            mlp_dim=4096,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=256,
+            lora_configs={
+                "attn": lora.LoRAConfig(rank=64, alpha=64.0),
+                "ffn": lora.LoRAConfig(rank=64, alpha=64.0),
+            },
         )
     raise ValueError(f"Unknown variant: {variant}")
 
