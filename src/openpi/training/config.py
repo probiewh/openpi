@@ -1757,6 +1757,7 @@ _CONFIGS = [
             ),
             num_train_steps=50_000,
             batch_size=32,
+            fsdp_devices=4,
             freeze_filter=pi0_armonly_config.Pi0ArmOnlyConfig(
                 pi05=True,
                 paligemma_variant="gemma_2b_lora32",
