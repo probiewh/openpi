@@ -155,8 +155,12 @@ def main():
     if a.workers_only:state(phase='complement_processed');return
     state(phase='validating');manifest=finalize(c,source,dest,stage)
     print('Dataset validated',manifest['total_episodes'],manifest['total_frames'],flush=True)
-    if not a.skip_sync:mirror_dataset(c,dest,mirror)
-    print('PROCESSING AND RSYNC COMPLETE',flush=True)
+    if not a.skip_sync:
+        mirror_dataset(c,dest,mirror)
+        print('PROCESSING AND RSYNC COMPLETE',flush=True)
+    else:
+        state(phase='augmented_complete',destination=str(dest),total_episodes=manifest['total_episodes'],total_frames=manifest['total_frames'])
+        print('AUGMENTED DATA VALIDATED; synchronization deferred to paired dataset',flush=True)
 if __name__=='__main__':
     try:main()
     except Exception as e:

@@ -40,3 +40,5 @@ repo_id：`competition/cup_four_cameras_bgaug32_sam2_pairs400`
 
 修改续跑规则：必须同时满足增强标志、渲染配置指纹和视频校验和才能跳过，不能把已复制原片当成增强结果。
 原始数据与旧处理结果均不删除、不覆盖。
+
+`test_pairs.py`使用临时合成数据验证合并、索引、动作/状态/时间戳不变、四路视频统计、断点续跑，并通过服务器现有LeRobot数据加载器读取四路视频及50步动作chunk，确认动作chunk不会跨越episode边界。

@@ -15,9 +15,10 @@ def main():
     assert fingerprint({'seed':1,'safety_margin_px':12})!=fingerprint({'seed':1,'safety_margin_px':13})
     with tempfile.TemporaryDirectory(prefix='sam-pairs-test-') as td:
         root=Path(td);source=root/'source';full=root/'augmented';dest=root/'pairs'
-        features={k:dict(dtype='video',shape=[16,24,3],info={'video.crf':30,'video.preset':12}) for k in ['top','left','right','goal']}
-        features.update({k:dict(dtype='float32' if k in ('action','observation.state','timestamp') else 'int64',shape=[26] if k in ('action','observation.state') else [1]) for k in ['action','observation.state','timestamp','episode_index','frame_index','index','task_index']})
-        info=dict(features=features,fps=30,chunks_size=1000,total_episodes=2,total_frames=8,total_videos=8,total_chunks=1,
+        cameras=['observation.images.cam_top','observation.images.cam_left_wrist','observation.images.cam_right_wrist','observation.images.goal']
+        features={k:dict(dtype='video',shape=[16,24,3],names=['height','width','channels'],info={'video.crf':30,'video.preset':12,'video.fps':30,'video.channels':3,'video.height':16,'video.width':24,'video.codec':'mpeg4','video.pix_fmt':'yuv420p','video.is_depth_map':False,'has_audio':False}) for k in cameras}
+        features.update({k:dict(dtype='float32' if k in ('action','observation.state','timestamp') else 'int64',shape=[26] if k in ('action','observation.state') else [1],names=None) for k in ['action','observation.state','timestamp','episode_index','frame_index','index','task_index']})
+        info=dict(codebase_version='v2.1',robot_type='synthetic_test',total_tasks=1,features=features,fps=30,chunks_size=1000,total_episodes=2,total_frames=8,total_videos=8,total_chunks=1,
                   splits={'train':'0:2'},data_path='data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet',
                   video_path='videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4')
         eps=[dict(episode_index=i,length=n,tasks=['pick']) for i,n in enumerate((3,5))]
@@ -34,7 +35,7 @@ def main():
             for base in (source,full):
                 path=base/relative(info,i);path.parent.mkdir(parents=True,exist_ok=True);pq.write_table(table,path)
             stats={k:numeric_stats(table[k].to_pylist()) for k in table.column_names};videos={}
-            for key in ('top','left','right','goal'):
+            for key in cameras:
                 for base,color in ((source,40),(full,180)):
                     path=base/relative(info,i,key);path.parent.mkdir(parents=True,exist_ok=True)
                     writer=cv2.VideoWriter(str(path),cv2.VideoWriter_fourcc(*'mp4v'),30,(24,16))
@@ -63,10 +64,20 @@ def main():
         assert all_index==list(range(16))
         stats=read(dest/'meta/stats.json')
         assert stats['index']['min']==[0] and stats['index']['max']==[15]
-        assert stats['index']['count']==[16] and stats['top']['count']==[16]
-        assert 0.3<stats['top']['mean'][0][0][0]<0.6
+        assert stats['index']['count']==[16] and stats[cameras[0]]['count']==[16]
+        assert 0.3<stats[cameras[0]]['mean'][0][0][0]<0.6
         # Second run must be resumable without recomputing or changing the final data.
         assert build(source,full,dest,root/'mirror',sync=False)==manifest
         print('PASS: paired IDs, action/state/time preservation, 4 cameras, frame totals, stats and resume')
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+        dataset=LeRobotDataset('competition/pairs',root=dest,download_videos=False,
+                              delta_timestamps={'action':[j/30 for j in range(50)]},video_backend='pyav')
+        assert len(dataset)==16
+        first_aug=dataset[8];end_original=dataset[2]
+        assert first_aug['episode_index'].item()==2 and first_aug['action'].shape==(50,26)
+        assert first_aug[cameras[0]].mean().item()>0.5
+        assert end_original['action_is_pad'][1:].all().item()
+        assert np.array_equal(end_original['action'][0].numpy(),end_original['action'][-1].numpy())
+        print('PASS: installed LeRobot loader reads all four videos and 50-step action chunks stay inside episode boundaries')
 
 if __name__=='__main__':main()
