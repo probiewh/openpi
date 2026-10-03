@@ -1,0 +1,9 @@
+__pycache__/
+*.log
+*.lock
+logs/
+status.json
+pipeline_status.json
+workers.json
+old_settings_snapshot.json
+reuse_report.json
