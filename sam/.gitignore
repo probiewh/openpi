@@ -1,0 +1,9 @@
+.venv
+vendor/
+logs/
+*.log
+*.lock
+*.pid
+status.json
+workers.json
+__pycache__/
