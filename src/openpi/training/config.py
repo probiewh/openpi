@@ -1916,7 +1916,7 @@ _CONFIGS = [
                 repo_id="competition/cup_step02_lerobot_v3_4cam",
 
                 assets=AssetsConfig(
-                    assets_dir="/root/data1/xxy/openpi/assets/second_task_4cam",
+                    assets_dir="/root/data/xxy/openpi/assets/second_task_4cam",
                     asset_id="competition/cup_step02_lerobot_v3_4cam",
                 ),
 
@@ -1961,6 +1961,69 @@ _CONFIGS = [
                 action_expert_variant="gemma_300m_lora",
                 image_keys=DEX_4CAM_IMAGE_KEYS,
             ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
+            name="second_task_4cam_lora32",
+            keep_period=5000,
+
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # VLM LoRA：16 → 32
+                paligemma_variant="gemma_2b_lora32",
+                # Action Expert LoRA：保持32
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_step02_lerobot_v3_4cam",
+
+                assets=AssetsConfig(
+                    assets_dir="/root/data/xxy/openpi/assets/second_task_4cam",
+                    asset_id="competition/cup_step02_lerobot_v3_4cam",
+                ),
+
+                default_prompt=(
+                    "Place the cup at the sealing station, wait for sealing to finish, "
+                    "then return the sealed cup to the output area."
+                ),
+                goal_camera_name="cam_goal",
+
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+
+                adapt_to_pi=False,
+            ),
+
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=32,
+
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                # 必须与上面的 model 完全一致
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+
             ema_decay=None,
         ),
         TrainConfig(
@@ -2069,6 +2132,69 @@ _CONFIGS = [
                     ).get_freeze_filter(),
                     ema_decay=None,
                 ),
+        TrainConfig(
+            name="third_task_4cam_lora32",
+            keep_period=5000,
+
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                # VLM LoRA：rank16 → rank32
+                paligemma_variant="gemma_2b_lora32",
+                # Action Expert 已经是 rank32
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_step03_lerobot_v3_4cam",
+
+                assets=AssetsConfig(
+                    assets_dir="/root/data/xxy/openpi/assets/third_task_4cam_lora32",
+                    asset_id="competition/cup_step03_lerobot_v3_4cam",
+                ),
+
+                default_prompt=(
+                    "Pick up the barcode label and stick it onto the cup."
+                ),
+                goal_camera_name="cam_goal",
+
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+
+                adapt_to_pi=False,
+            ),
+
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+
+            num_train_steps=40_000,
+            batch_size=32,
+
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                # 必须与上面的模型配置一致
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+
+            ema_decay=None,
+        ),
         TrainConfig(
                 name="pi05_lora_g1_130_old",
                 keep_period = 1000,
