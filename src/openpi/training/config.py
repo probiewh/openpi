@@ -1671,6 +1671,57 @@ _CONFIGS = [
             ema_decay=None,
         ),
         TrainConfig(
+            name="first_task_4cam_bgaug_lora32",
+            keep_period=5000,
+            # Same four-camera 32/32 baseline; only the training data changes.
+            model=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ),
+            data=LeRobotDexDataConfig(
+                repo_id="competition/cup_four_cameras_bgaug32_sam2_pairs400",
+                assets=AssetsConfig(
+                    assets_dir="/root/data/xxy/openpi/assets/first_task_4cam_bgaug_lora32",
+                    asset_id="competition/cup_four_cameras_bgaug32_sam2_pairs400",
+                ),
+                default_prompt="Pick up the cup and place it at the designated location.",
+                goal_camera_name="cam_goal",
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform(
+                            {
+                                "images": {
+                                    "cam_high": "observation.images.cam_top",
+                                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                                    "cam_goal": "observation.images.goal",
+                                },
+                                "state": "observation.state",
+                                "actions": "action",
+                            }
+                        )
+                    ]
+                ),
+                adapt_to_pi=False,
+            ),
+            # Also makes compute_norm_stats output and training lookup agree.
+            assets_base_dir="/root/data/xxy/openpi/assets",
+            weight_loader=weight_loaders.CheckpointWeightLoader(
+                "gs://openpi-assets/checkpoints/pi05_base/params"
+            ),
+            num_train_steps=50_000,
+            batch_size=32,
+            freeze_filter=pi0_config.Pi0Config(
+                pi05=True,
+                paligemma_variant="gemma_2b_lora32",
+                action_expert_variant="gemma_300m_lora",
+                image_keys=DEX_4CAM_IMAGE_KEYS,
+            ).get_freeze_filter(),
+            ema_decay=None,
+        ),
+        TrainConfig(
             name="first_task_4cam_lora64",
             keep_period=5000,
             model=pi0_config.Pi0Config(
